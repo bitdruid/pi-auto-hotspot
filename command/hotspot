@@ -3,7 +3,7 @@
 #copyright 2019; needs packages: nmap, hostapd, dnsmasq
 
 ap_ssid=$(cat /etc/hostapd/hostapd.conf | grep -Po '(?<=(?<!.)ssid=).*') #finds ssid in hostapd (positive lookahead with negative no char before)
-dhcp_ip='192.168.1.1'
+dhcp_ip='192.168.0.1'
 inet_ip='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
 network_state=0
 ap_state=0
@@ -16,6 +16,7 @@ samba=0
 # Parameters are -open, -close, -auto, -h
 # samba 0 = internal share (AP)
 # samba 1 = external share
+
 
 connector() {
 	#$1 = interface
@@ -31,8 +32,9 @@ connector() {
 	ip a flush $1
 	ip a add $dhcp_ip/24 dev $1
 	systemctl start nmbd smbd
-	echo '--------> AP now running on first available interface:' $1
+	echo '--------> AP now running on interface:' $1
 }
+
 
 disconnector() {
 	#$1 = interface
@@ -45,54 +47,64 @@ disconnector() {
 	systemctl start dhcpcd@$1
 }
 
+
 repairer() {
 	#$1 = interface
-	if [[ ! $(systemctl status hostapd | grep 'Active: active (running') || ! $(iw dev | grep $ap_ssid) ]]; then
-		echo "hostapd not running -> restart"
-		systemctl restart hostapd
-		repair_state=1
-	fi
-	if ! [[ $(systemctl status dnsmasq | grep 'Active: active (running') ]]; then
-		echo "dnsmasq not running -> restart"
-		systemctl restart dnsmasq
-		repair_state=1
-	fi
-	if [[ $(systemctl status wpa_supplicant@$1 | grep 'Active: active (running') ]]; then
-		echo "wpa_supplicant@"$1 "running -> stopping"
-		systemctl stop wpa_supplicant@$1
-		repair_state=1
-	fi
-	if ! [[ $(ip a show $1 | grep $dhcp_ip) ]]; then
-		echo "AP has no static IP -> setting"
-		ip a add $dhcp_ip/24 dev $1
-		repair_state=1
-	fi
-	if ! [[ $(systemctl status nmbd | grep 'Active: active (running') ]]; then
-		echo "Samba Service nmbd not running -> restart"
-		systemctl restart nmbd
-		repair_state=1
-	fi
-	if ! [[ $(systemctl status smbd | grep 'Active: active (running') ]]; then
-		echo "Samba Service smbd not running -> restart"
-		systemctl restart smbd
-		repair_state=1
-	fi
-	if ! [[ $(ip link show $1 up) ]]; then
-		echo "Interface " $1 " is DOWN -> bringing UP"
-		ip link set $1 up
-	fi
-	if [[ $repair_state != 1 ]]; then
-		echo "--------> AP is working as expected"
+	if [[ -z $(iw dev | grep $ap_ssid) ]]; then
+		echo ''
+		echo '--------> no AP active, nothing to repair'
+		echo '--------> first open up AP, see help'
+		echo ''
 	else
-		echo "--------> AP repaired"
+		if [[ ! $(systemctl status hostapd | grep 'Active: active (running') || ! $(iw dev | grep $ap_ssid) ]]; then
+			echo "hostapd not running -> restart"
+			systemctl restart hostapd
+			repair_state=1
+		fi
+		if ! [[ $(systemctl status dnsmasq | grep 'Active: active (running') ]]; then
+			echo "dnsmasq not running -> restart"
+			systemctl restart dnsmasq
+			repair_state=1
+		fi
+		if [[ $(systemctl status wpa_supplicant@$1 | grep 'Active: active (running') ]]; then
+			echo "wpa_supplicant@"$1 "running -> stopping"
+			systemctl stop wpa_supplicant@$1
+			repair_state=1
+		fi
+		if ! [[ $(ip a show $1 | grep $dhcp_ip) ]]; then
+			echo "AP has no static IP -> setting"
+			ip a add $dhcp_ip/24 dev $1
+			repair_state=1
+		fi
+		if ! [[ $(systemctl status nmbd | grep 'Active: active (running') ]]; then
+			echo "Samba Service nmbd not running -> restart"
+			systemctl restart nmbd
+			repair_state=1
+		fi
+		if ! [[ $(systemctl status smbd | grep 'Active: active (running') ]]; then
+			echo "Samba Service smbd not running -> restart"
+			systemctl restart smbd
+			repair_state=1
+		fi
+		if ! [[ $(ip link show $1 up) ]]; then
+			echo "Interface " $1 " is DOWN -> bringing UP"
+			ip link set $1 up
+		fi
+		if [[ $repair_state != 1 ]]; then
+			echo "--------> AP is working as expected"
+		else
+			echo "--------> AP repaired"
+		fi
 	fi
 }
+
 
 forwarder() {
 	#$1 = take traffic incoming from interface $1
 	#$2 = forward traffic to interface $2
 	echo 'forwarding alle traffic from ' $1 ' to ' $2
 }
+
 
 devicer() {
 #create array with all external wifi interfaces and find first free device for connection
@@ -133,19 +145,29 @@ devicer() {
 				# 	connector ${wifi_devices[0]}
 				# fi
 		fi
-	elif [[ $1 == 'open' ]]; then	
-		for i in ${wifi_devices[@]} ; do
-			if [[ -z $(iw $i info | grep -o $ap_ssid) ]]; then
-				connector $i
-				repairer $i
-				break
+	#$3 is a user-specified interface
+	elif [[ $1 == 'open' ]]; then
+		if ! [[ -z $3 ]]; then
+			if [[ -z $(iw $3 info | grep -o $ap_ssid) ]]; then
+				connector $3
+				repairer $3
 			else
-				echo '--------> interface not available for hotspot:' $i
+				echo '--------> interface not available for hotspot:' $2
 			fi
-			if [[ -z $(iw dev | grep -o $ap_ssid) ]]; then
-				echo '--------> could not open AP!'
-			fi
-	        done
+		else
+			for i in ${wifi_devices[@]} ; do
+				if [[ -z $(iw $i info | grep -o $ap_ssid) ]]; then
+					connector $i
+					repairer $i
+					break
+				else
+					echo '--------> interface not available for hotspot:' $i
+				fi
+				if [[ -z $(iw dev | grep -o $ap_ssid) ]]; then
+					echo '--------> could not open AP!'
+				fi
+				done
+		fi
 	elif [[ $1 == 'close' ]]; then
 		for i in ${wifi_devices[@]} ; do
 			if [[ $(iw $i info | grep -o $ap_ssid) ]]; then
@@ -174,27 +196,36 @@ devicer() {
 ### Command Paramter	###
 ###						###
 
-if [[ $1 == '-auto' ]]; then
-	#array with all default gateway-routes
-	n=0
-	for j in $(ip route | grep 'default' | grep -E -o $inet_ip)
-	do
-		route_array[$n]=$j
-		let "n= $n + 1"
-	done
+if [[ $1 == '-a' || $1 == '--auto' ]]; then	
 
-	#if Array contains any IP then some network is active -> state 1 or 2
-	for i in ${route_array[@]}
-	do
-		if [[ $i != $dhcp_ip ]]; then
-			if [[ $(nmap -sP $i | grep 'Host is up') ]] ; then 
-				echo ""
-				echo "- found external gateway:" $i
-				network_state=1
-				samba=1
-			fi
-		fi
-	done
+	gateway_ip=$(nmap --script broadcast-dhcp-discover | grep -Po 'Router:(.*)' | grep -E -o $inet_ip)
+	if ! [[ -z $router ]]; then
+		echo ""
+		echo "- found external gateway:" $gateway_ip
+		network_state=1
+		samba=1
+	fi
+	# #array with all default gateway-routes
+	# n=0
+	# for j in $(ip route | grep 'default' | grep -E -o $inet_ip)
+	# do
+	# 	route_array[$n]=$j
+	# 	let "n= $n + 1"
+	# done
+
+	# #if Array contains any IP then some network is active -> state 1 or 2
+	# for i in ${route_array[@]}
+	# do
+	# 	if [[ $i != $dhcp_ip ]]; then
+	# 		if [[ $(nmap -sP $i | grep 'Host is up') ]] ; then 
+	# 			echo ""
+	# 			echo "- found external gateway:" $i
+	# 			network_state=1
+	# 			samba=1
+	# 		fi
+	# 	fi
+	# done
+
 	#if no network is connected and AP IP is found -> state 2
 	if [[ $network_state != 1 && $(iw dev | grep -o $ap_ssid) ]]; then network_state=2 ; fi
 	if [[ $(iw dev | grep -o $ap_ssid) ]]; then ap_state=1; fi
@@ -234,46 +265,61 @@ esac
 ### Manual control Parameter	###
 ###								###
 
-elif [[ $1 == '-join' ]]; then
+elif [[ $1 == '-j' || $1 == '--join' ]]; then
 	echo ''
 	echo '------ Checking for known networks and rejoin... ------'
 	devicer join
 	echo ''
-elif [[ $1 == '-open' ]]; then
-        echo ""
-        echo "----- trying to open Access Point with samba -----"
-	devicer open
+elif [[ $1 == '-o' || $1 == '--open' ]]; then
+    echo ""
+    echo "----- trying to open Access Point with samba -----"
+	devicer open $2
 	echo "--------> done"
 	echo ""
-elif [[ $1 == '-close' ]]; then
+elif [[ $1 == '-c' || $1 == '--close' ]]; then
 	echo ""
-        echo "----- closing Access Point -----"
+    echo "----- closing Access Point -----"
 	devicer close
 	echo "--------> done"
-        echo ""
-elif [[ $1 == '-fordward' ]]; then
+    echo ""
+elif [[ $1 == '-r' || $1 == '--repair' ]]; then
+	echo ''
+	echo '----- checking repair of Access Point -----'
+	devicer repair
+	echo '--------> done'
+	echo ''	
+elif [[ $1 == '-f' || $1 == '--fordward' ]]; then
 	echo ''
 	echo 'Under construction...'
 	devicer forward $2 $3
 	echo ''
 	
-elif [[ $1 == '-h' ]]; then
+elif [[ $1 == '-h' || $1 == '--help' ]]; then
 	echo ''
-	echo '----- raspberry hotspot script v1.5 -----'
+	echo '----- raspberry hotspot script v1.6 -----'
 	echo 'This script was made for use as a cronjob. It will automatically open an AP if the PI does not have an active network connection. Set cronjob e.g. to every 5 minutes. Use parameter -auto for cron. You can use the other parameters to manually control the hotspot.'
+	echo 'Hotspot will ALWAYS KILL an active connection if necessary!'
 	echo ''
 	echo 'Usage:'
 	echo '[hotspot] [parameter] [opt1] [opt2]'
-    echo '[-auto]			auto Access-Point'
-	echo '[-join] 			checks for known networks and tries to reconnect'
-	echo '					Otherwise hotspot wont shut down and pi never connects to known networks automatically'
-	echo '[-open]			open Access-Point (thought for manual control)'
-	echo '[-close]			close Access-Point (thought for manual control)'
-	echo '[-fordward]		forward Access-Point to connected network'
-	echo '					or give [opt1 = from interface] [opt2 = to interface]'
+    echo '[-a] [--auto]       auto Access-Point'
+	echo ''
+	echo '[-j] [--join]       checks for known networks and tries to reconnect'
+	echo '                    Otherwise pi never connects to known networks automatically'
+	echo ''
+	echo '[-o] [--open]       open Access-Point (thought for manual control)'
+	echo '                    carefully: will force kill any connection on free interface!'
+	echo '                    [opt1 = interface for hotspot]'
+	echo ''
+	echo '[-c] [--close]      close Access-Point (thought for manual control)'
+	echo ''
+	echo '[-r] [--repair]     repair hotspot'
+	echo ''
+	echo '[-f] [--fordward]   forward Access-Point to connected network'
+	echo '                    or: [opt1 = from interface] [opt2 = to interface]'
 	echo ''
 else
 	echo ''
-	echo 'Type -h for help'
+	echo 'Type -h --help for help'
 	echo ''
 fi

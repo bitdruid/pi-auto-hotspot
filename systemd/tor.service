@@ -1,0 +1,13 @@
+[Service]
+EnvironmentFile=/etc/default/torproxy
+
+ExecStartPre=/bin/bash -c '/bin/sed -i "s/^TransPort .*:/TransPort $TOR_IFADDR:/" /etc/tor/torrc'
+ExecStartPre=/bin/bash -c '/bin/sed -i "s/^DNSPort .*:/DNSPort $TOR_IFADDR:/" /etc/tor/torrc'
+
+ExecStartPost=/sbin/iptables -t nat -A PREROUTING -i $TOR_IFNAME -p tcp --dport 22 -j REDIRECT --to-ports 22
+ExecStartPost=/sbin/iptables -t nat -A PREROUTING -i $TOR_IFNAME -p udp --dport 53 -j REDIRECT --to-ports 53
+ExecStartPost=/sbin/iptables -t nat -A PREROUTING -i $TOR_IFNAME -p tcp --syn -j REDIRECT --to-ports 9040
+
+ExecStopPost=-/sbin/iptables -t nat -D PREROUTING -i $TOR_IFNAME -p tcp --dport 22 -j REDIRECT --to-ports 22
+ExecStopPost=-/sbin/iptables -t nat -D PREROUTING -i $TOR_IFNAME -p udp --dport 53 -j REDIRECT --to-ports 53
+ExecStopPost=-/sbin/iptables -t nat -D PREROUTING -i $TOR_IFNAME -p tcp --syn -j REDIRECT --to-ports 9040

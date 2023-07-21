@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# Check if a DHCP IP address was received
+dhcp_output=$(sudo nmap --script broadcast-dhcp-discover -sU 255.255.255.255 | grep -Po 'Router:(.*)')
+ip_address=$(echo "$dhcp_output" | grep -E -o '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
+
+if [ -z "$ip_address" ]; then
+    echo "No DHCP IP address exists - restarting network services..."
+    sudo systemctl restart networking.service
+else
+    echo "DHCP IP address exists: $ip_address"
+fi

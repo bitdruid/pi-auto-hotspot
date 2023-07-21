@@ -1,5 +1,39 @@
 #!/bin/bash
 
+# check if root
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root. Try 'sudo ./install.sh'" 
+   exit 1
+fi
+
+echo ''
+echo '=== DEPENDENCIES ==='
+echo 'Installing:'
+echo '-samba'
+echo '-hostapd'
+echo '-dnsmasq'
+echo '-nmap'
+echo '-dhcpcd5'
+echo '-tor'
+echo ''
+read -p 'proceed? (y/n)' selection
+echo ''
+if [[ $selection != "y" ]]; then
+    echo 'aborting...'
+    exit 1
+fi
+packages=(samba hostapd dnsmasq nmap dhcpcd5 tor)
+# install missing packages
+for package in "${packages[@]}"; do
+    if ! dpkg -s "$package" >/dev/null 2>&1; then
+        echo "Installing $package"
+        sudo apt-get install "$package"
+    fi
+done
+
+echo ''
+echo '=== INSTALLATION ==='
+
 #rules
 chown -R root:root *
 chmod 0755 command/* 
@@ -11,6 +45,9 @@ sudo cp command/wifi /usr/bin/wifi
 sudo cp command/wpamod /usr/bin/wpamod
 sudo cp command/automount /usr/bin/automount
 sudo cp command/logclean /usr/bin/logclean
+sudo cp command/torcontrol /usr/bin/torcontrol
+sudo cp command/routecontrol /usr/bin/routecontrol
+
 
 #add decision: will overwrite following files: proceed?
 #configs, services and rules
@@ -24,6 +61,11 @@ fi
 sudo cp config/smb.conf /etc/samba/smb.conf
 sudo cp config/hostapd.conf /etc/hostapd/hostapd.conf
 sudo cp config/dnsmasq.conf /etc/dnsmasq.conf
+sudo systemctl edit tor.service < systemd/tor.service
+sudo cp misc/torproxy /etc/default/torproxy
+sudo cp misc/torrc /etc/tor/torrc
+sudo cp misc/tor.service_override.conf /etc/systemd/system/tor.service.d/override.conf
+sudo cp misc/tor.resolv.conf /etc/resolv.conf
 
 #predictable network interface names
 if [[ ! -L /etc/udev/rules.d/80-net-setup-link.rules ]]; then
@@ -38,9 +80,9 @@ fi
 
 #prepare wpa_supplicant
 if [ ! -f /etc/wpa_supplicant.conf ]; then
-    cp misc/wpa_supplicant.conf /etc/wpa_supplicant/
+    cp misc/wpa_supplicant.conf.empty /etc/wpa_supplicant/
 fi
-sudo cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+sudo cp /etc/wpa_supplicant/wpa_supplicant.conf.empty /etc/wpa_supplicant/wpa_supplicant.conf
 
 #prepare services
 sudo systemctl unmask hostapd.service
@@ -49,3 +91,6 @@ sudo systemctl enable hotspot.service
 sudo systemctl disable --now dhcpcd.service
 sudo systemctl disable --now dnsmasq.service
 sudo systemctl disable --now hostapd.service
+
+echo ''
+echo 'Reboot to get changes active. Search for the piHotspot to reconnect via SSH and configure.'

@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# $2 = entry interface (where devices connect)
+# $3 = exit interface (internet or a local lan)
+
+#todo check if interfaces do exist, hotspot can never be exit
+
+if [[ $1 == "-d" || $1 == "--disable"]]; then
+        sed -i 's/^net.ipv4.ip_forward=1.*$/#net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+        sudo sysctl -p
+        sudo iptables --flush
+        echo ''
+        echo 'All routes cleared.'
+        echo ''
+elif [[ $1 == "-e" || $1 == "--enable" ]]; then
+    if [[ -z $2 || -z $3 ]]; then
+        echo ''
+        echo 'Please specify an entry-interface and an output-interface.'
+        echo ''
+    else
+        sed -i 's/^#net.ipv4.ip_forward=1.*$/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+        sudo sysctl -p
+        iptables -A FORWARD -i $2 -o $3 -j ACCEPT
+        iptables -A FORWARD -i $3 -o $2 -m state --state ESTABLISHED,RELATED -j ACCEPT
+        iptables -t nat -A POSTROUTING -o $3 -j MASQUERADE
+        echo ''
+        echo 'Established route from ' $2 ' to ' $3 '.'
+        echo ''
+elif [[ $1 == "-h" || $1 == "--help" ]]; then
+	echo ''
+	echo 'Miniscript for interface-routing.'
+    echo ''
+    echo 'routecontrol [opt1] [entry] [exit]'
+	echo ''
+    echo '[opt1]:'
+	echo '-d -disable      disable routing'
+	echo ''
+	echo '-e -enable       enable routing'
+	echo '                 [entry] interface where clients connect'
+    echo '                 [exit]  interface where traffic goes to'
+	echo ''
+	echo ''
+else
+	echo ''
+	echo 'Use -h or --help for help-'
+	echo ''
+fi
+
+
+
