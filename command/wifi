@@ -36,10 +36,6 @@ connector() {
 	fi
 }
 
-
-
-
-
 disconnector() {
 	#$1 = interface
 	systemctl stop wpa_supplicant@$1.service

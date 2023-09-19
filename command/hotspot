@@ -1,325 +1,306 @@
 #!/bin/bash
 
-#copyright 2019; needs packages: nmap, hostapd, dnsmasq
+# Copyright 2023; requires packages: nmap, hostapd, dnsmasq
 
-ap_ssid=$(cat /etc/hostapd/hostapd.conf | grep -Po '(?<=(?<!.)ssid=).*') #finds ssid in hostapd (positive lookahead with negative no char before)
+# Configuration
+ap_ssid=$(grep -Po '(?<=^ssid=).*' /etc/hostapd/hostapd.conf)
 dhcp_ip='192.168.0.1'
-inet_ip='\b([0-9]{1,3}\.){3}[0-9]{1,3}\b'
+wifi_interfaces=()
+free_interface=''
+ap_interface=''
 network_state=0
 ap_state=0
 samba=0
 
-# network_state
-# state 0 = no network (even no AP)
-# state 1 = external network connection (AP could be active but was ignored and will be shut down)
-# state 2 = no external network but active AP (going to check if errors: hostapd/dnsmasq not running, wpa_supplicant@ active)
-# Parameters are -open, -close, -auto, -h
-# samba 0 = internal share (AP)
-# samba 1 = external share
-
+# Functions
 
 connector() {
-	#$1 = interface
-	if [[ -z $(ip link set $1 up) ]]; then
-		ip link set $1 up
-	fi
-	systemctl stop wpa_supplicant@$1
-	systemctl stop dhcpcd@$1
-	sed -i 's/^interface=.*$/interface='$1'/g' /etc/hostapd/hostapd.conf
-	sed -i 's/^interface=.*$/interface='$1'/g' /etc/dnsmasq.conf
-	systemctl start hostapd dnsmasq
-	sleep 2
-	ip a flush $1
-	ip a add $dhcp_ip/24 dev $1
-	systemctl start nmbd smbd
-	echo '--------> AP now running on interface:' $1
-}
+    # Configure and start an Access Point on the specified interface
+    # $1 = interface
+    # $2 = SSID (optional)
 
+    local interface="$1"
+    local ssid="${2:-$ap_ssid}"
+
+    ifconfig "$interface" up
+    systemctl stop "wpa_supplicant@$interface"
+
+    # DHCP configuration
+    sed -i "s/^#interface .*/interface $interface/g" /etc/dhcpcd.conf
+    sed -i "s/^#static ip_address=.*/static ip_address=$dhcp_ip/g" /etc/dhcpcd.conf
+    sed -i 's/^#nohook wpa_supplicant/nohook wpa_supplicant/g' /etc/dhcpcd.conf
+
+    # AP configuration
+    sed -i "s/^interface=.*/interface=$interface/g" /etc/hostapd/hostapd.conf
+    sed -i "s/^interface=.*/interface=$interface/g" /etc/dnsmasq.conf
+    sed -i "s/^ssid=.*/ssid=$ssid/g" /etc/hostapd/hostapd.conf
+    sed -i "s/^wpa_passphrase=.*/wpa_passphrase=$ssid/g" /etc/hostapd/hostapd.conf
+
+    systemctl start hostapd dnsmasq
+    sleep 2
+    ip addr flush dev "$interface"
+    ip addr del "$dhcp_ip/24" dev "$interface"
+    systemctl start nmbd smbd
+
+    echo "-----> AP now running on interface: $interface"
+    echo "-----> AP SSID: $ssid"
+	get_ap_interface
+}
 
 disconnector() {
-	#$1 = interface
-	systemctl stop dnsmasq hostapd
-	ip a del $dhcp_ip/24 dev $1
-	ip a flush $1
-	ip link set $1 down
-	ip link set $1 up
-	systemctl start wpa_supplicant@$1
-	systemctl start dhcpcd@$1
+    # Disconnect and stop the Access Point on the specified interface
+    # $1 = interface
+
+    local interface="$1"
+
+    sed -i "s/^interface .*/#interface $interface/g" /etc/dhcpcd.conf
+    sed -i "s/^static ip_address=.*/#static ip_address=$dhcp_ip/g" /etc/dhcpcd.conf
+    sed -i 's/^nohook wpa_supplicant/#nohook wpa_supplicant/g' /etc/dhcpcd.conf
+    systemctl stop dnsmasq hostapd
+    ip addr del "$dhcp_ip/24" dev "$interface"
+    ip addr flush dev "$interface"
+    ifconfig "$interface" down
+    ifconfig "$interface" up
+    systemctl start "wpa_supplicant@$interface"
+
+	echo "-----> AP closed on interface: $interface"
+	get_ap_interface
 }
 
+get_all_interfaces() {
+    # Find all wireless interfaces and store them in the wifi_interfaces array
+    while read -r line; do
+        local interface=$(echo "$line" | awk '{print $2'})
+        if [[ $interface == 'wlan'* || $interface == 'wlp'* ]]; then
+            wifi_interfaces+=("$interface")
+        fi
+    done < <(iw dev | grep -o 'Interface.*')
+}
+
+get_ap_interface() {
+	# Find the interface which runs as Access Point
+	for i in "${wifi_interfaces[@]}"; do
+		if [[ $(iw "$i" info | grep -o "$ap_ssid") ]]; then
+			ap_interface="$i"
+			break
+		fi
+	done
+}
+
+get_free_interface() {
+	# Find a free interface and store it in the free_interface variable
+	for i in "${wifi_interfaces[@]}"; do
+		# Type should be managed and not AP
+		if [[ -z $(iw "$i" info | grep -o 'type AP') ]]; then
+			# No ssid should be set
+			if [[ -z $(iw "$i" info | grep -o 'ssid') ]]; then
+				free_interface="$i"
+				break
+			fi
+		fi	
+	done
+}
 
 repairer() {
-	#$1 = interface
-	if [[ -z $(iw dev | grep $ap_ssid) ]]; then
-		echo ''
-		echo '--------> no AP active, nothing to repair'
-		echo '--------> first open up AP, see help'
-		echo ''
-	else
-		if [[ ! $(systemctl status hostapd | grep 'Active: active (running') || ! $(iw dev | grep $ap_ssid) ]]; then
-			echo "hostapd not running -> restart"
-			systemctl restart hostapd
-			repair_state=1
-		fi
-		if ! [[ $(systemctl status dnsmasq | grep 'Active: active (running') ]]; then
-			echo "dnsmasq not running -> restart"
-			systemctl restart dnsmasq
-			repair_state=1
-		fi
-		if [[ $(systemctl status wpa_supplicant@$1 | grep 'Active: active (running') ]]; then
-			echo "wpa_supplicant@"$1 "running -> stopping"
-			systemctl stop wpa_supplicant@$1
-			repair_state=1
-		fi
-		if ! [[ $(ip a show $1 | grep $dhcp_ip) ]]; then
-			echo "AP has no static IP -> setting"
-			ip a add $dhcp_ip/24 dev $1
-			repair_state=1
-		fi
-		if ! [[ $(systemctl status nmbd | grep 'Active: active (running') ]]; then
-			echo "Samba Service nmbd not running -> restart"
-			systemctl restart nmbd
-			repair_state=1
-		fi
-		if ! [[ $(systemctl status smbd | grep 'Active: active (running') ]]; then
-			echo "Samba Service smbd not running -> restart"
-			systemctl restart smbd
-			repair_state=1
-		fi
-		if ! [[ $(ip link show $1 up) ]]; then
-			echo "Interface " $1 " is DOWN -> bringing UP"
-			ip link set $1 up
-		fi
-		if [[ $repair_state != 1 ]]; then
-			echo "--------> AP is working as expected"
-		else
-			echo "--------> AP repaired"
-		fi
-	fi
-}
+    # Check and repair the Access Point on the specified interface
+    # $1 = interface
 
+    local interface="$1"
+    local repair_state=0
 
-forwarder() {
-	#$1 = take traffic incoming from interface $1
-	#$2 = forward traffic to interface $2
-	echo 'forwarding alle traffic from ' $1 ' to ' $2
+    if [[ -z $(iw dev | grep "$ap_ssid") ]]; then
+        echo '-----> No AP active, nothing to repair'
+        echo '-----> First open up AP, see help'
+        return
+    fi
+
+    if ! systemctl status hostapd | grep -q 'Active: active (running)'; then
+        echo "-----> hostapd not running -> restart"
+        systemctl restart hostapd
+        repair_state=1
+    fi
+
+    if ! systemctl status dnsmasq | grep -q 'Active: active (running)'; then
+        echo "-----> dnsmasq not running -> restart"
+        systemctl restart dnsmasq
+        repair_state=1
+    fi
+
+    if systemctl status "wpa_supplicant@$interface" | grep -q 'Active: active (running)'; then
+        echo "-----> wpa_supplicant@$interface running -> stopping"
+        systemctl stop "wpa_supplicant@$interface"
+        repair_state=1
+    fi
+
+    if ! ip a show "$interface" | grep -q "$dhcp_ip"; then
+        echo "-----> AP has no static IP -> setting"
+        ip a add "$dhcp_ip/24" dev "$interface"
+        repair_state=1
+    fi
+
+    if ! systemctl status nmbd | grep -q 'Active: active (running)'; then
+        echo "-----> Samba Service nmbd not running -> restart"
+        systemctl restart nmbd
+        repair_state=1
+    fi
+
+    if ! systemctl status smbd | grep -q 'Active: active (running)'; then
+        echo "-----> Samba Service smbd not running -> restart"
+        systemctl restart smbd
+        repair_state=1
+    fi
+
+    if ! ip link show "$interface" | grep -q 'UP'; then
+        echo "-----> Interface $interface is DOWN -> bringing UP"
+        ip link set "$interface" up
+    fi
+
+    if [[ $repair_state != 1 ]]; then
+        echo "-----> AP is working as expected"
+    else
+        echo "-----> AP repaired"
+    fi
 }
 
 
 devicer() {
-#create array with all external wifi interfaces and find first free device for connection
-#if only internal wlan0 exist then use this for AP
-#after creation the AP's components will be checked
-#add wlan0 to the end of the array so first the script will try all other interfaces
-	n=0
-	for j in $(iw dev | grep -o 'wlan[1-99]') ; do
-		wifi_devices[$n]=$j
-		let "n= $n + 1"
-	done
-	wifi_devices+=('wlan0')
-	if [[ $1 == 'join' ]]; then
-		if [[ -z $(iw dev | grep $ap_ssid) ]]; then
-			echo '--------> Hotspot not running. No join possible. Check "iw dev".'
-		elif [[ -z ${wifi_devices[@]} ]]; then
-			echo '--------> No interface available! Check "iw dev".'
-		else
-			net_found=0
-			mapfile -t wifi_networks < <(iw dev ${wifi_devices[0]} scan | grep -i 'SSID:' | sed 's/SSID://g' | tr -d [:blank:])
-			for i in ${!wifi_networks[@]} ; do
-				if [[ -n $(grep -os ${wifi_networks[i]} /etc/wpa_supplicant/*) ]] ; then
-					net_found=1
-					echo '--------> Possible reconnect ' ${wifi_networks[i]}
-					echo '--------> Now leaving hotspot and waiting for reconnection. Use cron or "hotspot -open" for new AP...'
-					disconnector ${wifi_devices[0]}
-					break
-				fi
-			done
-				if (( $net_found != 1 )) ; then
-					echo '--------> No known networks found. Keeping up hotspot.'
-				fi
+    # Manage network devices (join, open, close, or repair)
+    # $1 = action (join, open, close, or repair)
+    # $2 = optional parameter for the interface
+    # $3 = optional parameter for the SSID
 
+    local action="$1"
+    local interface="$2"
+    local ssid="$3"
 
-				# sleep 30
-				# if ! [[ $(nmap -sP $i | grep 'Host is up') ]] ; then 
-				# 	echo '--------> No host found. Could not reconnect to a known network. Restarting hotspot...'
-				# 	connector ${wifi_devices[0]}
-				# fi
-		fi
-	#$3 is a user-specified interface
-	elif [[ $1 == 'open' ]]; then
-		if ! [[ -z $3 ]]; then
-			if [[ -z $(iw $3 info | grep -o $ap_ssid) ]]; then
-				connector $3
-				repairer $3
-			else
-				echo '--------> interface not available for hotspot:' $2
-			fi
-		else
-			for i in ${wifi_devices[@]} ; do
-				if [[ -z $(iw $i info | grep -o $ap_ssid) ]]; then
-					connector $i
-					repairer $i
+    case "$action" in
+        'join')
+            if [[ -z $(iw dev | grep "$ap_ssid") ]]; then
+                echo '-----> Hotspot not running. No join possible. Check "iw dev".'
+            elif [[ -z ${wifi_interfaces[@]} ]]; then
+                echo '-----> No interface available! Check "iw dev".'
+            else
+                local net_found=0
+                mapfile -t wifi_networks < <(iw dev "${wifi_interfaces[0]}" scan | grep -i 'SSID:' | sed 's/SSID://g' | tr -d [:blank:])
+                for i in "${!wifi_networks[@]}"; do
+                    if [[ -n $(grep -os "${wifi_networks[i]}" /etc/wpa_supplicant/*) ]]; then
+                        net_found=1
+                        echo "-----> Possible reconnect ${wifi_networks[i]}"
+                        echo "-----> Now leaving hotspot and waiting for reconnection. Use cron or 'hotspot -open' for a new AP..."
+                        disconnector "${wifi_interfaces[0]}"
+                        break
+                    fi
+                done
+                if ((net_found != 1)); then
+                    echo '-----> No known networks found. Keeping up hotspot.'
+                fi
+            fi
+            ;;
+        'open')
+            if [[ ! -z $interface ]]; then
+                if [[ -z $(iw "$interface" info | grep -o "$ap_ssid") ]]; then
+					echo "-----> Opening AP on specified interface: $interface"
+                    connector "$interface" "$ssid"
+                    repairer "$interface"
+                else
+                    echo "-----> Interface not available for hotspot: $interface"
+                fi
+				if [[ -z $ap_interface ]]; then
+					echo "-----> Could not open AP!"
+				fi
+            else
+                if [[ ! -z $free_interface ]]; then
+					echo "-----> First found free interface: $free_interface"
+					connector "$free_interface" "piHotspot"
+					repairer "$free_interface"
 					break
 				else
-					echo '--------> interface not available for hotspot:' $i
+					echo "-----> No free interface available!"
+                fi
+				if [[ -z $ap_interface ]]; then
+					echo "-----> Could not open AP!"
 				fi
-				if [[ -z $(iw dev | grep -o $ap_ssid) ]]; then
-					echo '--------> could not open AP!'
-				fi
-				done
-		fi
-	elif [[ $1 == 'close' ]]; then
-		for i in ${wifi_devices[@]} ; do
-			if [[ $(iw $i info | grep -o $ap_ssid) ]]; then
-				disconnector $i
-			fi
-		done
-	elif [[ $1 == 'forward' ]]; then
-		if [[ -z $2 && -z $3 ]]; then
-			for i in ${wifi_devices[@]} ; do
-				forwarder $i
-			done
-		else
-			forwarder $2 $3
-		fi
-	elif [[ $1 == 'repair' ]]; then
-		for i in ${wifi_devices[@]} ; do
-			if [[ $(iw $i info | grep -o $ap_ssid) ]]; then
-				repairer $i
-			fi
-		done
-	fi
-
+            fi
+            ;;
+        'close')
+            if [[ ! -z $ap_interface ]]; then
+                    disconnector "$ap_interface"
+            fi
+            ;;
+        'repair')
+            if [[ ! -z $ap_interface ]]; then
+				repairer "$ap_interface"
+			fi			
+            ;;
+        *)
+            echo "-----> Invalid action: $action"
+            ;;
+    esac
 }
 
-###						###
-### Command Paramter	###
-###						###
 
-if [[ $1 == '-a' || $1 == '--auto' ]]; then	
+# Main
 
-	gateway_ip=$(nmap --script broadcast-dhcp-discover | grep -Po 'Router:(.*)' | grep -E -o $inet_ip)
-	if ! [[ -z $router ]]; then
-		echo ""
-		echo "- found external gateway:" $gateway_ip
-		network_state=1
-		samba=1
-	fi
-	# #array with all default gateway-routes
-	# n=0
-	# for j in $(ip route | grep 'default' | grep -E -o $inet_ip)
-	# do
-	# 	route_array[$n]=$j
-	# 	let "n= $n + 1"
-	# done
+get_all_interfaces
+get_ap_interface
+get_free_interface
+echo ''
 
-	# #if Array contains any IP then some network is active -> state 1 or 2
-	# for i in ${route_array[@]}
-	# do
-	# 	if [[ $i != $dhcp_ip ]]; then
-	# 		if [[ $(nmap -sP $i | grep 'Host is up') ]] ; then 
-	# 			echo ""
-	# 			echo "- found external gateway:" $i
-	# 			network_state=1
-	# 			samba=1
-	# 		fi
-	# 	fi
-	# done
+if [[ $1 == '-a' || $1 == '--auto' ]]; then
+    # Auto mode: Check network state and take action accordingly
+	echo "Automatic AP handling started"
 
-	#if no network is connected and AP IP is found -> state 2
-	if [[ $network_state != 1 && $(iw dev | grep -o $ap_ssid) ]]; then network_state=2 ; fi
-	if [[ $(iw dev | grep -o $ap_ssid) ]]; then ap_state=1; fi
-#	if [[ $network_state != 1 && 2 ]]; then network_state=0 ; fi 
+    gateway_ip=$(nmap --script broadcast-dhcp-discover | grep -Po 'Router:(.*)' | grep -E -o '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
 
+    if [[ ! -z $gateway_ip ]]; then
+        echo "-----> Found external gateway: $gateway_ip"
+        network_state=1
+        samba=1
+    fi
 
-case "$network_state" in
-	0)
-        echo ""
-        echo "-----  no external gateway -----!"
-        echo "--------> trying to open AP with samba"
-	devicer open
-	echo ""
-	;;
+    if [[ ! -z $ap_interface ]]; then
+        network_state=2
+    fi
 
-	1)
-	echo ""
-        echo "-----  external gateway -----"
-	if [[ $ap_state == 1 ]]; then 
-	echo "--------> closing AP"
-	devicer close
-	echo ""
-
-	elif [[ $ap_state == 0 ]]; then echo "--------> no AP needed"; echo ""; fi
-	;;
-
-	2)
-	echo ""
-	echo "----- only AP is active -----"
-	echo "--------> checking AP"
-	devicer repair
-	echo ""
-	;;
-esac
-
-###								###
-### Manual control Parameter	###
-###								###
-
+    case "$network_state" in
+        0)
+            echo "-----> No external gateway found. Trying to open AP with Samba"
+            devicer open
+            ;;
+        1)
+            echo "-----> External gateway found"
+            if [[ $ap_state == 1 ]]; then
+                echo "-----> Closing AP"
+                devicer close
+            else
+                echo "-----> No AP needed"
+            fi
+            ;;
+        2)
+            echo "-----> AP is active - checking"
+            devicer repair
+            ;;
+    esac
 elif [[ $1 == '-j' || $1 == '--join' ]]; then
-	echo ''
-	echo '------ Checking for known networks and rejoin... ------'
-	devicer join
-	echo ''
+    echo "Checking for known networks and attempting to reconnect"
+    devicer join
 elif [[ $1 == '-o' || $1 == '--open' ]]; then
-    echo ""
-    echo "----- trying to open Access Point with samba -----"
-	devicer open $2
-	echo "--------> done"
-	echo ""
+    echo "Attempting to open Access Point with Samba"
+    devicer open "$2" "$3"
 elif [[ $1 == '-c' || $1 == '--close' ]]; then
-	echo ""
-    echo "----- closing Access Point -----"
-	devicer close
-	echo "--------> done"
-    echo ""
+    echo "Closing Access Point"
+    devicer close
 elif [[ $1 == '-r' || $1 == '--repair' ]]; then
-	echo ''
-	echo '----- checking repair of Access Point -----'
-	devicer repair
-	echo '--------> done'
-	echo ''	
-elif [[ $1 == '-f' || $1 == '--fordward' ]]; then
-	echo ''
-	echo 'Under construction...'
-	devicer forward $2 $3
-	echo ''
-	
+    echo "Checking repair of Access Point"
+    devicer repair
 elif [[ $1 == '-h' || $1 == '--help' ]]; then
-	echo ''
-	echo '----- raspberry hotspot script v1.6 -----'
-	echo 'This script was made for use as a cronjob. It will automatically open an AP if the PI does not have an active network connection. Set cronjob e.g. to every 5 minutes. Use parameter -auto for cron. You can use the other parameters to manually control the hotspot.'
-	echo 'Hotspot will ALWAYS KILL an active connection if necessary!'
-	echo ''
-	echo 'Usage:'
-	echo '[hotspot] [parameter] [opt1] [opt2]'
-    echo '[-a] [--auto]       auto Access-Point'
-	echo ''
-	echo '[-j] [--join]       checks for known networks and tries to reconnect'
-	echo '                    Otherwise pi never connects to known networks automatically'
-	echo ''
-	echo '[-o] [--open]       open Access-Point (thought for manual control)'
-	echo '                    carefully: will force kill any connection on free interface!'
-	echo '                    [opt1 = interface for hotspot]'
-	echo ''
-	echo '[-c] [--close]      close Access-Point (thought for manual control)'
-	echo ''
-	echo '[-r] [--repair]     repair hotspot'
-	echo ''
-	echo '[-f] [--fordward]   forward Access-Point to connected network'
-	echo '                    or: [opt1 = from interface] [opt2 = to interface]'
-	echo ''
+    echo "Usage:"
+    echo "  [-a, --auto]      Auto mode (default)"
+    echo "  [-j, --join]      Check for known networks and attempt to reconnect"
+    echo "  [-o, --open]      Open Access Point (manual control)"
+    echo "  [-c, --close]     Close Access Point (manual control)"
+    echo "  [-r, --repair]    Repair Access Point"
 else
-	echo ''
-	echo 'Type -h --help for help'
-	echo ''
+    echo "Type -h or --help for help"
 fi
+echo ''

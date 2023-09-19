@@ -2,7 +2,7 @@
 
 # check if root
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root. Try 'sudo ./install.sh'" 
+   echo "This script must be run as root." 
    exit 1
 fi
 
@@ -14,7 +14,7 @@ echo '-hostapd'
 echo '-dnsmasq'
 echo '-nmap'
 echo '-dhcpcd5'
-echo '-tor'
+#echo '-tor'
 echo ''
 read -p 'proceed? (y/n)' selection
 echo ''
@@ -22,7 +22,7 @@ if [[ $selection != "y" ]]; then
     echo 'aborting...'
     exit 1
 fi
-packages=(samba hostapd dnsmasq nmap dhcpcd5 tor)
+packages=(samba hostapd dnsmasq nmap dhcpcd5) #tor)
 # install missing packages
 for package in "${packages[@]}"; do
     if ! dpkg -s "$package" >/dev/null 2>&1; then
@@ -45,15 +45,12 @@ sudo cp command/wifi /usr/bin/wifi
 sudo cp command/wpamod /usr/bin/wpamod
 sudo cp command/automount /usr/bin/automount
 sudo cp command/logclean /usr/bin/logclean
-sudo cp command/torcontrol /usr/bin/torcontrol
-sudo cp command/routecontrol /usr/bin/routecontrol
+#sudo cp command/torcontrol /usr/bin/torcontrol
+#sudo cp command/routecontrol /usr/bin/routecontrol
 
-
-#add decision: will overwrite following files: proceed?
 #configs, services and rules
 sudo cp systemd/hotspot.service /etc/systemd/system
 sudo cp udev/85-automount.rules /etc/udev/rules.d
-sudo cp systemd/dhcpcd@.service /lib/systemd/system
 sudo cp systemd/automount@.service /lib/systemd/system
 if ! [ -f /etc/samba/smb.conf ]; then
     sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
@@ -61,11 +58,14 @@ fi
 sudo cp config/smb.conf /etc/samba/smb.conf
 sudo cp config/hostapd.conf /etc/hostapd/hostapd.conf
 sudo cp config/dnsmasq.conf /etc/dnsmasq.conf
-sudo systemctl edit tor.service < systemd/tor.service
-sudo cp misc/torproxy /etc/default/torproxy
-sudo cp misc/torrc /etc/tor/torrc
-sudo cp misc/tor.service_override.conf /etc/systemd/system/tor.service.d/override.conf
-sudo cp misc/tor.resolv.conf /etc/resolv.conf
+# sudo systemctl edit tor.service < systemd/tor.service
+# sudo cp misc/torproxy /etc/default/torproxy
+# sudo cp misc/torrc /etc/tor/torrc
+# sudo cp misc/tor.service_override.conf /etc/systemd/system/tor.service.d/override.conf
+# sudo cp misc/tor.resolv.conf /etc/resolv.conf
+
+#replace DAEMON_CONF /etc/default/hostapd 
+sudo sed -i 's/^#DAEMON_CONF="".*$/DAEMON_CONF="\/etc\/hostapd\/hostapd.conf"/g' /etc/default/hostapd
 
 #predictable network interface names
 if [[ ! -L /etc/udev/rules.d/80-net-setup-link.rules ]]; then
@@ -87,10 +87,11 @@ sudo cp /etc/wpa_supplicant/wpa_supplicant.conf.empty /etc/wpa_supplicant/wpa_su
 #prepare services
 sudo systemctl unmask hostapd.service
 sudo wpamod -disable
-sudo systemctl enable hotspot.service
-sudo systemctl disable --now dhcpcd.service
+sudo systemctl enable --now hotspot.service
+sudo systemctl enable --now dhcpcd.service
 sudo systemctl disable --now dnsmasq.service
 sudo systemctl disable --now hostapd.service
 
 echo ''
-echo 'Reboot to get changes active. Search for the piHotspot to reconnect via SSH and configure.'
+echo '=== DONE ==='
+echo ''
