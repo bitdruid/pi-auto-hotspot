@@ -14,7 +14,6 @@ echo '-hostapd'
 echo '-dnsmasq'
 echo '-nmap'
 echo '-dhcpcd5'
-#echo '-tor'
 echo ''
 read -p 'proceed? (y/n)' selection
 echo ''
@@ -35,9 +34,10 @@ echo '=== CLEANUP ==='
 # cean up configuration files, services, and rules
 
 # remove systemd services
-sudo systemctl stop hotspot.service
-sudo systemctl disable hotspot.service
+sudo systemctl disable --now hotspot.service
 sudo rm /etc/systemd/system/hotspot.service
+sudo systemctl disable --now hotspot.timer
+sudo rm /etc/systemd/system/hotspot.timer
 
 # remove udev rules
 sudo rm /etc/udev/rules.d/85-automount.rules
@@ -76,12 +76,8 @@ sudo systemctl stop dnsmasq.service
 
 # remove command scripts
 sudo rm /usr/bin/hotspot
-sudo rm /usr/bin/wifi
 sudo rm /usr/bin/wpamod
 sudo rm /usr/bin/automount
-sudo rm /usr/bin/logclean
-#sudo rm /usr/bin/torcontrol
-#sudo rm /usr/bin/routecontrol
 
 echo ''
 echo '=== DONE ==='

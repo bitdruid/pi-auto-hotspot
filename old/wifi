@@ -1,38 +1,32 @@
 #!/bin/bash
 
-# This script will let you connect to existing APs by simple terminal-commands
-
-# todo: --known to list known networks
-# substract the AP-interface to prevent interruption through reconnect
-# reconnect only for interfaces with stored credentials; else (or if hotspot only when --force) message not available
-
-free_if=''					#stores the first found free interface
-
+wifi_interfaces=()
+free_if=''
 
 #store all available wifi-interfaces in an array and cp the credentials for each interface
-n=0
-for j in $(iw dev | grep -o 'wlan[0-99]') ; do
-	wifi_interfaces[$n]=$j
-	let "n= $n + 1"
-	cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant-$j.conf
-done
-
-
-
-
+get_all_interfaces() {
+    # Find all wireless interfaces and store them in the wifi_interfaces array
+    while read -r line; do
+        local interface=$(echo "$line" | awk '{print $2'})
+        if [[ $interface == 'wlan'* || $interface == 'wlp'* ]]; then
+            wifi_interfaces+=("$interface")
+        fi
+    done < <(iw dev | grep -o 'Interface.*')
+	cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant-$interface.conf
+}
 
 #function for handling connection
 connector() {
 	#$1 = interface
 	cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant-$1.conf
-	ip link set $1 up
+	ifconfig $1 up
 	systemctl stop wpa_supplicant@$1.service
 	systemctl start wpa_supplicant@$1.service
 	#ip r del default
-	if ! [[ $(systemctl status dhcpcd@$1 | grep -o "active (running)") ]]; then
-		systemctl start dhcpcd@$1
+	if ! [[ $(systemctl status dhcpcd | grep -o "active (running)") ]]; then
+		systemctl start dhcpcd
 	else
-		systemctl restart dhcpcd@$1
+		systemctl restart dhcpcd
 	fi
 }
 
@@ -41,15 +35,15 @@ disconnector() {
 	systemctl stop wpa_supplicant@$1.service
 	rm /etc/wpa_supplicant/wpa_supplicant-$1.conf
 	sleep 2
-	ip a flush $1
-	ip r del default
-	if [[ $(systemctl status dhcpcd@$1 | grep -o "active (running)") ]]; then
-		systemctl stop dhcpcd@$1 
+	ip addr flush dev $1
+	ip route del default
+	if [[ $(systemctl status dhcpcd | grep -o "active (running)") ]]; then
+		systemctl stop dhcpcd 
 	fi
 	echo ''
 	echo 'Network on interface '$1 'successfully disconnected and dhcpcd-daemon stopped.'
 	echo ''
-	ip link set $1 down
+	ifconfig $1 down
 }
 
 
@@ -97,9 +91,18 @@ store_credentials() {
 
 
 
-###						###
-### Settings start here ###
-###						###
+###		 ###
+### Main ###
+###		 ###
+
+#check if root
+if [[ $EUID -ne 0 ]]; then
+	echo ''
+	echo 'This script must be run as root!'
+	echo ''
+	exit 1
+fi
+get_all_interfaces
 
 
 if [[ $1 == '-i' || $1 == '--interface' ]]; then
@@ -126,7 +129,7 @@ if [[ $1 == '-i' || $1 == '--interface' ]]; then
 elif [[ $1 == '-s' || $1 == '--scan' ]]; then
 	if  [[ -n $2 ]]; then
 		echo 'Using' $2 'for scan...'
-		ip link set $2 up
+		ifconfig $2 up
 		iw dev $2 scan | grep 'SSID:'
 		echo ''
 	else
@@ -139,7 +142,7 @@ elif [[ $1 == '-s' || $1 == '--scan' ]]; then
 			echo ''
 			echo 'Found available interface:' ${wifi_interfaces[0]}			
 			echo 'Networks in range:'
-			ip link set ${wifi_interfaces[0]} up 
+			ifconfig ${wifi_interfaces[0]} up
 			iw dev ${wifi_interfaces[0]} scan | grep 'SSID:'
 			echo ''
 		fi
@@ -162,14 +165,12 @@ elif [[ $1 == '-r' || $1 == '--reconnect' ]]; then
 			fi
 		done
 		if ! [ "$free_if" == '' ]; then
-				echo ''
-				echo 'Using' $free_if 'for reconnection...'
-				echo 'Waiting for network...'
-				echo ''
-				connector $free_if
-				break
-			fi
-		
+			echo ''
+			echo 'Using' $free_if 'for reconnection...'
+			echo 'Waiting for network...'
+			echo ''
+			connector $free_if
+		fi
 	else
 		interface_checker $2
 		if [ "$free_if" == "$2" ]; then				

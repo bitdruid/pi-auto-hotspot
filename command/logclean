@@ -1,8 +1,0 @@
-#!/bin/bash
-
-# script will overwrite all logs with empty string
-# removes all network connections
-
-find /var/log -type f -exec cp /dev/null {} \;
-find /var/log -type f \( -name '*.old' -o -name '*.gz' -o -name *.[0-9] \) -exec rm {} \;
-rm /etc/NetworkManager/system-connections/*

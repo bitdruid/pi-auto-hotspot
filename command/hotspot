@@ -91,7 +91,7 @@ get_free_interface() {
 	# Find a free interface and store it in the free_interface variable
 	for i in "${wifi_interfaces[@]}"; do
 		# Type should be managed and not AP
-		if [[ -z $(iw "$i" info | grep -o 'type AP') ]]; then
+		if [[ ! -z $(iw "$i" info | grep -o 'type managed') ]]; then
 			# No ssid should be set
 			if [[ -z $(iw "$i" info | grep -o 'ssid') ]]; then
 				free_interface="$i"
@@ -102,17 +102,10 @@ get_free_interface() {
 }
 
 repairer() {
-    # Check and repair the Access Point on the specified interface
-    # $1 = interface
+    # Check and repair the Access Point
 
-    local interface="$1"
+    get_ap_interface
     local repair_state=0
-
-    if [[ -z $(iw dev | grep "$ap_ssid") ]]; then
-        echo '-----> No AP active, nothing to repair'
-        echo '-----> First open up AP, see help'
-        return
-    fi
 
     if ! systemctl status hostapd | grep -q 'Active: active (running)'; then
         echo "-----> hostapd not running -> restart"
@@ -126,15 +119,15 @@ repairer() {
         repair_state=1
     fi
 
-    if systemctl status "wpa_supplicant@$interface" | grep -q 'Active: active (running)'; then
-        echo "-----> wpa_supplicant@$interface running -> stopping"
-        systemctl stop "wpa_supplicant@$interface"
+    if systemctl status "wpa_supplicant@$ap_interface" | grep -q 'Active: active (running)'; then
+        echo "-----> wpa_supplicant@$ap_interface running -> stopping"
+        systemctl stop "wpa_supplicant@$ap_interface"
         repair_state=1
     fi
 
-    if ! ip a show "$interface" | grep -q "$dhcp_ip"; then
+    if ! ip a show "$ap_interface" | grep -q "$dhcp_ip"; then
         echo "-----> AP has no static IP -> setting"
-        ip a add "$dhcp_ip/24" dev "$interface"
+        ip a add "$dhcp_ip/24" dev "$ap_interface"
         repair_state=1
     fi
 
@@ -150,9 +143,9 @@ repairer() {
         repair_state=1
     fi
 
-    if ! ip link show "$interface" | grep -q 'UP'; then
-        echo "-----> Interface $interface is DOWN -> bringing UP"
-        ip link set "$interface" up
+    if ! ip link show "$ap_interface" | grep -q 'UP'; then
+        echo "-----> Interface $ap_interface is DOWN -> bringing UP"
+        ip link set "$ap_interface" up
     fi
 
     if [[ $repair_state != 1 ]]; then
@@ -201,7 +194,7 @@ devicer() {
                 if [[ -z $(iw "$interface" info | grep -o "$ap_ssid") ]]; then
 					echo "-----> Opening AP on specified interface: $interface"
                     connector "$interface" "$ssid"
-                    repairer "$interface"
+                    repairer
                 else
                     echo "-----> Interface not available for hotspot: $interface"
                 fi
@@ -212,7 +205,7 @@ devicer() {
                 if [[ ! -z $free_interface ]]; then
 					echo "-----> First found free interface: $free_interface"
 					connector "$free_interface" "piHotspot"
-					repairer "$free_interface"
+					repairer
 					break
 				else
 					echo "-----> No free interface available!"
@@ -229,8 +222,10 @@ devicer() {
             ;;
         'repair')
             if [[ ! -z $ap_interface ]]; then
-				repairer "$ap_interface"
-			fi			
+				repairer
+			else
+                echo '-----> No AP active - skipping checkup'
+            fi	
             ;;
         *)
             echo "-----> Invalid action: $action"

@@ -14,7 +14,6 @@ echo '-hostapd'
 echo '-dnsmasq'
 echo '-nmap'
 echo '-dhcpcd5'
-#echo '-tor'
 echo ''
 read -p 'proceed? (y/n)' selection
 echo ''
@@ -41,15 +40,12 @@ chmod 0644 config/* systemd/* udev/*
 
 #command scripts
 sudo cp command/hotspot /usr/bin/hotspot
-sudo cp command/wifi /usr/bin/wifi
 sudo cp command/wpamod /usr/bin/wpamod
 sudo cp command/automount /usr/bin/automount
-sudo cp command/logclean /usr/bin/logclean
-#sudo cp command/torcontrol /usr/bin/torcontrol
-#sudo cp command/routecontrol /usr/bin/routecontrol
 
 #configs, services and rules
 sudo cp systemd/hotspot.service /etc/systemd/system
+sudo cp systemd/hotspot.timer /etc/systemd/system
 sudo cp udev/85-automount.rules /etc/udev/rules.d
 sudo cp systemd/automount@.service /lib/systemd/system
 if ! [ -f /etc/samba/smb.conf ]; then
@@ -58,11 +54,6 @@ fi
 sudo cp config/smb.conf /etc/samba/smb.conf
 sudo cp config/hostapd.conf /etc/hostapd/hostapd.conf
 sudo cp config/dnsmasq.conf /etc/dnsmasq.conf
-# sudo systemctl edit tor.service < systemd/tor.service
-# sudo cp misc/torproxy /etc/default/torproxy
-# sudo cp misc/torrc /etc/tor/torrc
-# sudo cp misc/tor.service_override.conf /etc/systemd/system/tor.service.d/override.conf
-# sudo cp misc/tor.resolv.conf /etc/resolv.conf
 
 #replace DAEMON_CONF /etc/default/hostapd 
 sudo sed -i 's/^#DAEMON_CONF="".*$/DAEMON_CONF="\/etc\/hostapd\/hostapd.conf"/g' /etc/default/hostapd
@@ -88,6 +79,7 @@ sudo cp /etc/wpa_supplicant/wpa_supplicant.conf.empty /etc/wpa_supplicant/wpa_su
 sudo systemctl unmask hostapd.service
 sudo wpamod -disable
 sudo systemctl enable --now hotspot.service
+sudo systemctl enable --now hotspot.timer
 sudo systemctl enable --now dhcpcd.service
 sudo systemctl disable --now dnsmasq.service
 sudo systemctl disable --now hostapd.service

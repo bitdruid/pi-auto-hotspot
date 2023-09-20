@@ -1,0 +1,9 @@
+[Unit]
+Description=Run hotspot --auto every minute
+
+[Timer]
+OnCalendar=*:0/1
+Unit=hotspot.service
+
+[Install]
+WantedBy=timers.target

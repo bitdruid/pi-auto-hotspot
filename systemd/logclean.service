@@ -1,9 +1,0 @@
-[Unit]
-Description=delete logs and networks periodically
-
-[Service]
-ExecStartPre=logclean
-ExecStart=logclean
-
-[Install]
-WantedBy=multi-user.target
